@@ -2,7 +2,7 @@ name: Build SystemUI Media Fix
 
 on:
   push:
-    branches: [SystemUI-Fixer]
+    branches: [main, SystemUI-Fixer]
     paths:
       - 'zygisk/**'
       - 'module/**'
@@ -38,9 +38,19 @@ jobs:
       - name: Verify ELF hardening and exports
         run: bash ci/verify-elf.sh
 
+      - name: Verify flashable ZIP
+        run: |
+          zip='dist/SystemUI-Media-Fix-v6.9.zip'
+          test -f "$zip"
+          unzip -l "$zip" | grep -q 'zygisk/arm64-v8a.so'
+          if unzip -l "$zip" | grep -q 'armeabi-v7a'; then
+            echo 'Unexpected 32-bit payload in ZIP' >&2
+            exit 1
+          fi
+
       - name: Upload flashable ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: SystemUI-Media-Fix-v0.4.0
-          path: dist/SystemUI-Media-Fix-v0.4.0.zip
+          name: SystemUI-Media-Fix-v6.9
+          path: dist/SystemUI-Media-Fix-v6.9.zip
           if-no-files-found: error

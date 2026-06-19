@@ -27,6 +27,7 @@ LOCAL_LDFLAGS := \
     -Wl,--as-needed \
     -Wl,--exclude-libs,ALL \
     -Wl,-z,relro \
-    -Wl,-z,now
+    -Wl,-z,now \
+    -Wl,-z,noexecstack
 LOCAL_LDLIBS := -llog -landroid -ldl
 include $(BUILD_SHARED_LIBRARY)

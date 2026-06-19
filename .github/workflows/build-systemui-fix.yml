@@ -19,7 +19,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -80,3 +80,31 @@ jobs:
           name: SystemUI-Media-Fix-v6.9
           path: dist/SystemUI-Media-Fix-v6.9.zip
           if-no-files-found: error
+
+      - name: Publish GitHub release v6.9
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag='v6.9'
+          zip='dist/SystemUI-Media-Fix-v6.9.zip'
+
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$tag" "$zip" \
+              --repo "$GITHUB_REPOSITORY" \
+              --clobber
+            gh release edit "$tag" \
+              --repo "$GITHUB_REPOSITORY" \
+              --draft=false \
+              --prerelease=false \
+              --latest
+          else
+            gh release create "$tag" "$zip" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title 'SystemUI MediaMetadata NPE Fix v6.9' \
+              --generate-notes \
+              --latest
+          fi

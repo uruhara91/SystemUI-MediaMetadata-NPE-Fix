@@ -9,6 +9,13 @@ on:
       - 'ci/**'
       - 'build.sh'
       - '.github/workflows/build-systemui-fix.yml'
+  pull_request:
+    paths:
+      - 'zygisk/**'
+      - 'module/**'
+      - 'ci/**'
+      - 'build.sh'
+      - '.github/workflows/build-systemui-fix.yml'
   workflow_dispatch:
 
 permissions:

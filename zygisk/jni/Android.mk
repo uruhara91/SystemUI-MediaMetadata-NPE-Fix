@@ -11,6 +11,7 @@ LOCAL_CPPFLAGS := \
     -D_FORTIFY_SOURCE=2 \
     -fno-exceptions \
     -fno-rtti \
+    -fno-threadsafe-statics \
     -fno-semantic-interposition \
     -fstack-protector-strong \
     -fvisibility=hidden \

@@ -29,18 +29,20 @@ printf '%s' "$CURRENT_ABIS" | grep -q 'arm64-v8a' || abort "! arm64-v8a is requi
   abort "! Unsupported SystemUI versionName: $CURRENT_SYSTEMUI_VERSION_NAME"
 
 [ -f "$MODPATH/zygisk/arm64-v8a.so" ] || abort "! Missing arm64 Zygisk library"
+[ ! -e "$MODPATH/zygisk/armeabi-v7a.so" ] || abort "! Unexpected 32-bit Zygisk library"
 
 if [ "$APATCH" = "true" ] || [ "$KERNELPATCH" = "true" ]; then
   ui_print "* APatch/FolkPatch-compatible manager detected"
-  ui_print "* A standalone Zygisk implementation is required"
+  ui_print "* Zygisk Next or ReZygisk is required"
 elif [ -n "$KSU" ]; then
   ui_print "* KernelSU-compatible manager detected"
-  ui_print "* A standalone Zygisk implementation is required"
+  ui_print "* Zygisk Next or ReZygisk is required"
 else
   ui_print "* Magisk-compatible manager detected"
-  ui_print "* Enable built-in Zygisk or use one standalone implementation"
+  ui_print "* Enable built-in Zygisk, Zygisk Next, or ReZygisk"
 fi
 
+ui_print "* arm64-only target: com.android.systemui"
 ui_print "* Keep com.android.systemui inside the Zygisk injection scope"
 ui_print "* Reboot is required after installation"
 

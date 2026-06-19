@@ -10,9 +10,17 @@
 #include "binder.hpp"
 #include "zygisk.hpp"
 
+#ifndef SYSTEMUI_MEDIA_FIX_INFO_LOGS
+#define SYSTEMUI_MEDIA_FIX_INFO_LOGS 0
+#endif
+
+#if SYSTEMUI_MEDIA_FIX_INFO_LOGS
 #define LOGI(fmt, ...) \
     __android_log_print(ANDROID_LOG_INFO, "SystemUIMediaFix", "[%d] " fmt, \
                         __LINE__ __VA_OPT__(,) __VA_ARGS__)
+#else
+#define LOGI(...) ((void)0)
+#endif
 #define LOGE(fmt, ...) \
     __android_log_print(ANDROID_LOG_ERROR, "SystemUIMediaFix", "[%d] " fmt, \
                         __LINE__ __VA_OPT__(,) __VA_ARGS__)
@@ -26,7 +34,9 @@
 namespace {
 
 constexpr int kSupportedSdk = 31;
-constexpr char kTargetProcess[] = "com.android.systemui";
+constexpr char16_t kTargetProcess[] = u"com.android.systemui";
+constexpr size_t kTargetProcessLength =
+    (sizeof(kTargetProcess) / sizeof(kTargetProcess[0])) - 1;
 constexpr char kSupportedFingerprint[] =
     "Infinix/X6815B-OP/Infinix-X6815B:12/SP1A.210812.016/231020V486:user/release-keys";
 constexpr char16_t kSessionControllerDescriptor[] =
@@ -34,17 +44,24 @@ constexpr char16_t kSessionControllerDescriptor[] =
 constexpr size_t kSessionControllerDescriptorLength =
     (sizeof(kSessionControllerDescriptor) / sizeof(kSessionControllerDescriptor[0])) - 1;
 
+// Android 12 ISessionController.aidl: getMetadata is transaction 32.
+// The framework, SystemUI and libbinder are fixed by the locked final firmware.
+constexpr uint32_t kGetMetadataTransactionCode = 32;
+
 // Android 12 native Binder request header: strict-mode policy, work-source UID,
-// and vendor header. This is intentionally compile-time because the module is
-// fingerprint-locked to one final firmware.
+// and vendor header. These offsets are intentionally compile-time for this
+// single fingerprint-locked firmware.
 constexpr size_t kBinderHeaderLength = 3 * sizeof(uint32_t);
 constexpr size_t kDescriptorOffset = kBinderHeaderLength + sizeof(int32_t);
 constexpr size_t kDescriptorStorageBytes =
     (kSessionControllerDescriptorLength + 1) * sizeof(char16_t);
 constexpr size_t kMinimumMetadataRequestSize =
     kDescriptorOffset + kDescriptorStorageBytes;
-constexpr size_t kNullReplySize = 2 * sizeof(int32_t);
+constexpr size_t kNullReplySize = sizeof(uint64_t);
 constexpr size_t kMaximumGeneratedReplySize = 4 * 1024;
+
+constexpr char kTransactSymbol[] =
+    "_ZN7android14IPCThreadState8transactEijRKNS_6ParcelEPS1_j";
 
 using TransactFn = int (*)(void*, int32_t, uint32_t, void*, void*, uint32_t);
 using ParcelSetDataFn = int32_t (*)(void*, const uint8_t*, size_t);
@@ -58,14 +75,15 @@ enum InitState : uint32_t {
 };
 
 uint32_t g_init_state = kInitNotStarted;
-uint32_t g_get_metadata_code = 0;
 TransactFn g_transact_original = nullptr;
 ParcelSetDataFn g_parcel_set_data = nullptr;
 ParcelSetDataPositionFn g_parcel_set_data_position = nullptr;
 void* g_libbinder_handle = nullptr;
 uint8_t* g_empty_metadata_reply = nullptr;
 size_t g_empty_metadata_reply_size = 0;
+#if SYSTEMUI_MEDIA_FIX_INFO_LOGS
 uint32_t g_patch_log_once = 0;
+#endif
 uint32_t g_set_data_error_log_once = 0;
 
 COLD bool clearJniException(JNIEnv* env, const char* operation) {
@@ -73,6 +91,13 @@ COLD bool clearJniException(JNIEnv* env, const char* operation) {
     LOGE("JNI exception while %s", operation);
     env->ExceptionClear();
     return true;
+}
+
+COLD bool recycleParcel(JNIEnv* env, jobject parcel, jmethodID recycle,
+                        const char* operation) {
+    if (parcel == nullptr || recycle == nullptr) return true;
+    env->CallVoidMethod(parcel, recycle);
+    return !clearJniException(env, operation);
 }
 
 COLD bool buildEmptyMetadataReply(JNIEnv* env) {
@@ -87,101 +112,141 @@ COLD bool buildEmptyMetadataReply(JNIEnv* env) {
     };
 
     jclass parcel_class = env->FindClass("android/os/Parcel");
+    if (clearJniException(env, "finding android.os.Parcel") ||
+        parcel_class == nullptr) {
+        return finish(false);
+    }
+
     jclass builder_class = env->FindClass("android/media/MediaMetadata$Builder");
-    if (parcel_class == nullptr || builder_class == nullptr ||
-        clearJniException(env, "finding framework classes")) {
+    if (clearJniException(env, "finding MediaMetadata.Builder") ||
+        builder_class == nullptr) {
         return finish(false);
     }
 
     jmethodID obtain =
         env->GetStaticMethodID(parcel_class, "obtain", "()Landroid/os/Parcel;");
+    if (clearJniException(env, "resolving Parcel.obtain") || obtain == nullptr) {
+        return finish(false);
+    }
+
     jmethodID write_no_exception =
         env->GetMethodID(parcel_class, "writeNoException", "()V");
+    if (clearJniException(env, "resolving Parcel.writeNoException") ||
+        write_no_exception == nullptr) {
+        return finish(false);
+    }
+
     jmethodID write_typed_object = env->GetMethodID(
         parcel_class, "writeTypedObject", "(Landroid/os/Parcelable;I)V");
+    if (clearJniException(env, "resolving Parcel.writeTypedObject") ||
+        write_typed_object == nullptr) {
+        return finish(false);
+    }
+
     jmethodID marshall = env->GetMethodID(parcel_class, "marshall", "()[B");
+    if (clearJniException(env, "resolving Parcel.marshall") || marshall == nullptr) {
+        return finish(false);
+    }
+
     jmethodID recycle = env->GetMethodID(parcel_class, "recycle", "()V");
+    if (clearJniException(env, "resolving Parcel.recycle") || recycle == nullptr) {
+        return finish(false);
+    }
+
     jmethodID builder_constructor =
         env->GetMethodID(builder_class, "<init>", "()V");
+    if (clearJniException(env, "resolving MediaMetadata.Builder constructor") ||
+        builder_constructor == nullptr) {
+        return finish(false);
+    }
+
     jmethodID build = env->GetMethodID(
         builder_class, "build", "()Landroid/media/MediaMetadata;");
-
-    if (obtain == nullptr || write_no_exception == nullptr ||
-        write_typed_object == nullptr || marshall == nullptr || recycle == nullptr ||
-        builder_constructor == nullptr || build == nullptr ||
-        clearJniException(env, "resolving framework methods")) {
+    if (clearJniException(env, "resolving MediaMetadata.Builder.build") ||
+        build == nullptr) {
         return finish(false);
     }
 
     jobject parcel = env->CallStaticObjectMethod(parcel_class, obtain);
+    if (clearJniException(env, "obtaining replacement Parcel") || parcel == nullptr) {
+        return finish(false);
+    }
+
     jobject builder = env->NewObject(builder_class, builder_constructor);
-    jobject metadata = builder == nullptr ? nullptr : env->CallObjectMethod(builder, build);
-    if (parcel == nullptr || builder == nullptr || metadata == nullptr ||
-        clearJniException(env, "creating replacement metadata")) {
+    if (clearJniException(env, "creating MediaMetadata.Builder") || builder == nullptr) {
+        recycleParcel(env, parcel, recycle, "recycling builder-failed Parcel");
+        return finish(false);
+    }
+
+    jobject metadata = env->CallObjectMethod(builder, build);
+    if (clearJniException(env, "building empty MediaMetadata") || metadata == nullptr) {
+        recycleParcel(env, parcel, recycle, "recycling metadata-failed Parcel");
         return finish(false);
     }
 
     env->CallVoidMethod(parcel, write_no_exception);
+    if (clearJniException(env, "writing no-exception header")) {
+        recycleParcel(env, parcel, recycle, "recycling header-failed Parcel");
+        return finish(false);
+    }
+
     env->CallVoidMethod(parcel, write_typed_object, metadata, 1);
-    if (clearJniException(env, "serializing replacement metadata")) {
-        env->CallVoidMethod(parcel, recycle);
-        clearJniException(env, "recycling failed Parcel");
+    if (clearJniException(env, "serializing empty MediaMetadata")) {
+        recycleParcel(env, parcel, recycle, "recycling serialization-failed Parcel");
         return finish(false);
     }
 
     auto bytes = static_cast<jbyteArray>(env->CallObjectMethod(parcel, marshall));
-    if (bytes == nullptr || clearJniException(env, "marshalling replacement reply")) {
-        env->CallVoidMethod(parcel, recycle);
-        clearJniException(env, "recycling failed Parcel");
+    if (clearJniException(env, "marshalling replacement reply") || bytes == nullptr) {
+        recycleParcel(env, parcel, recycle, "recycling marshalling-failed Parcel");
         return finish(false);
     }
 
     const jsize length = env->GetArrayLength(bytes);
-    if (length <= static_cast<jsize>(kNullReplySize) ||
+    if (clearJniException(env, "reading replacement Parcel size") ||
+        length <= static_cast<jsize>(kNullReplySize) ||
         length > static_cast<jsize>(kMaximumGeneratedReplySize)) {
         LOGE("Unexpected replacement Parcel size: %d", length);
-        env->CallVoidMethod(parcel, recycle);
-        clearJniException(env, "recycling invalid Parcel");
+        recycleParcel(env, parcel, recycle, "recycling size-invalid Parcel");
         return finish(false);
     }
 
     auto* reply = static_cast<uint8_t*>(malloc(static_cast<size_t>(length)));
     if (reply == nullptr) {
         LOGE("Could not allocate %d bytes for replacement Parcel", length);
-        env->CallVoidMethod(parcel, recycle);
-        clearJniException(env, "recycling allocation-failed Parcel");
+        recycleParcel(env, parcel, recycle, "recycling allocation-failed Parcel");
         return finish(false);
     }
 
     env->GetByteArrayRegion(bytes, 0, length, reinterpret_cast<jbyte*>(reply));
     if (clearJniException(env, "copying replacement Parcel")) {
         free(reply);
-        env->CallVoidMethod(parcel, recycle);
-        clearJniException(env, "recycling copy-failed Parcel");
+        recycleParcel(env, parcel, recycle, "recycling copy-failed Parcel");
         return finish(false);
     }
 
-    int32_t exception_code = -1;
-    int32_t presence_marker = -1;
-    memcpy(&exception_code, reply, sizeof(exception_code));
-    memcpy(&presence_marker, reply + sizeof(exception_code), sizeof(presence_marker));
-    if (exception_code != 0 || presence_marker != 1) {
+    uint64_t reply_header = 0;
+    memcpy(&reply_header, reply, sizeof(reply_header));
+    if (reply_header != (uint64_t{1} << 32)) {
+        int32_t exception_code = -1;
+        int32_t presence_marker = -1;
+        memcpy(&exception_code, reply, sizeof(exception_code));
+        memcpy(&presence_marker, reply + sizeof(exception_code),
+               sizeof(presence_marker));
         LOGE("Unexpected replacement Parcel header: exception=%d presence=%d",
              exception_code, presence_marker);
         free(reply);
-        env->CallVoidMethod(parcel, recycle);
-        clearJniException(env, "recycling header-invalid Parcel");
+        recycleParcel(env, parcel, recycle, "recycling header-invalid Parcel");
         return finish(false);
     }
 
-    env->CallVoidMethod(parcel, recycle);
-    if (clearJniException(env, "recycling replacement Parcel")) {
+    if (!recycleParcel(env, parcel, recycle, "recycling replacement Parcel")) {
         free(reply);
         return finish(false);
     }
 
-    // Intentional process-lifetime allocation. The hook reads this immutable
-    // buffer concurrently and Parcel::setData copies it into each reply.
+    // Intentional process-lifetime allocation. The Binder hook concurrently
+    // reads this immutable buffer and Parcel::setData copies it into each reply.
     g_empty_metadata_reply = reply;
     g_empty_metadata_reply_size = static_cast<size_t>(length);
     LOGI("Prepared empty MediaMetadata reply (%zu bytes)", g_empty_metadata_reply_size);
@@ -189,38 +254,50 @@ COLD bool buildEmptyMetadataReply(JNIEnv* env) {
 }
 
 COLD void* resolveAnySymbol(void* handle, const char* const* names, size_t count) {
-    for (size_t i = 0; i < count; ++i) {
-        if (void* symbol = dlsym(RTLD_DEFAULT, names[i]); symbol != nullptr) {
-            return symbol;
+    if (handle != nullptr) {
+        for (size_t i = 0; i < count; ++i) {
+            if (void* symbol = dlsym(handle, names[i]); symbol != nullptr) {
+                return symbol;
+            }
         }
     }
-    if (handle == nullptr) return nullptr;
+
     for (size_t i = 0; i < count; ++i) {
-        if (void* symbol = dlsym(handle, names[i]); symbol != nullptr) {
+        if (void* symbol = dlsym(RTLD_DEFAULT, names[i]); symbol != nullptr) {
             return symbol;
         }
     }
     return nullptr;
 }
 
-COLD bool resolveParcelFunctions() {
-    if (g_libbinder_handle != nullptr) return true;
+COLD void resetBinderSymbols() {
+    g_transact_original = nullptr;
+    g_parcel_set_data = nullptr;
+    g_parcel_set_data_position = nullptr;
+    if (g_libbinder_handle != nullptr) {
+        dlclose(g_libbinder_handle);
+        g_libbinder_handle = nullptr;
+    }
+}
+
+COLD bool resolveBinderFunctions() {
+    if (g_libbinder_handle != nullptr) {
+        return g_transact_original != nullptr && g_parcel_set_data != nullptr &&
+               g_parcel_set_data_position != nullptr;
+    }
 
 #ifdef RTLD_NOLOAD
-    constexpr int kDlopenFlags = RTLD_NOW | RTLD_LOCAL | RTLD_NOLOAD;
-#else
-    constexpr int kDlopenFlags = RTLD_NOW | RTLD_LOCAL;
+    g_libbinder_handle =
+        dlopen("libbinder.so", RTLD_NOW | RTLD_LOCAL | RTLD_NOLOAD);
 #endif
-
-    // Keep one process-lifetime reference so the resolved native pointers can
-    // never outlive the library mapping, even under a nonstandard Zygisk loader.
-    g_libbinder_handle = dlopen("libbinder.so", kDlopenFlags);
     if (g_libbinder_handle == nullptr) {
-        LOGE("Could not reference loaded libbinder.so: %s", dlerror());
+        g_libbinder_handle = dlopen("libbinder.so", RTLD_NOW | RTLD_LOCAL);
+    }
+    if (g_libbinder_handle == nullptr) {
+        LOGE("Could not reference libbinder.so: %s", dlerror());
         return false;
     }
 
-#if defined(__LP64__)
     const char* set_data_symbols[] = {
         "_ZN7android6Parcel7setDataEPKhm",
         "_ZN7android6Parcel7setDataEPKvm",
@@ -229,33 +306,29 @@ COLD bool resolveParcelFunctions() {
         "_ZNK7android6Parcel15setDataPositionEm",
         "_ZN7android6Parcel15setDataPositionEm",
     };
-#else
-    const char* set_data_symbols[] = {
-        "_ZN7android6Parcel7setDataEPKhj",
-        "_ZN7android6Parcel7setDataEPKvj",
-    };
-    const char* set_position_symbols[] = {
-        "_ZNK7android6Parcel15setDataPositionEj",
-        "_ZN7android6Parcel15setDataPositionEj",
-    };
-#endif
+    const char* transact_symbols[] = {kTransactSymbol};
 
     g_parcel_set_data = reinterpret_cast<ParcelSetDataFn>(resolveAnySymbol(
         g_libbinder_handle, set_data_symbols,
         sizeof(set_data_symbols) / sizeof(set_data_symbols[0])));
-    g_parcel_set_data_position = reinterpret_cast<ParcelSetDataPositionFn>(resolveAnySymbol(
-        g_libbinder_handle, set_position_symbols,
-        sizeof(set_position_symbols) / sizeof(set_position_symbols[0])));
+    g_parcel_set_data_position = reinterpret_cast<ParcelSetDataPositionFn>(
+        resolveAnySymbol(g_libbinder_handle, set_position_symbols,
+                         sizeof(set_position_symbols) /
+                             sizeof(set_position_symbols[0])));
+    g_transact_original = reinterpret_cast<TransactFn>(resolveAnySymbol(
+        g_libbinder_handle, transact_symbols,
+        sizeof(transact_symbols) / sizeof(transact_symbols[0])));
 
-    if (g_parcel_set_data == nullptr || g_parcel_set_data_position == nullptr) {
-        LOGE("Could not resolve Parcel::setData/setDataPosition");
+    if (g_parcel_set_data == nullptr || g_parcel_set_data_position == nullptr ||
+        g_transact_original == nullptr) {
+        LOGE("Could not resolve required libbinder functions");
+        resetBinderSymbols();
         return false;
     }
     return true;
 }
 
-ALWAYS_INLINE bool isGetMetadataRequest(const PParcel* request, uint32_t code) {
-    if (LIKELY(code != g_get_metadata_code)) return false;
+ALWAYS_INLINE bool isExpectedMetadataRequest(const PParcel* request) {
     if (UNLIKELY(request == nullptr || request->data == nullptr ||
                  request->data_size < kMinimumMetadataRequestSize)) {
         return false;
@@ -288,22 +361,30 @@ ALWAYS_INLINE bool isNullMetadataReply(const PParcel* reply) {
         return false;
     }
 
-    int32_t exception_code = -1;
-    int32_t presence_marker = -1;
-    memcpy(&exception_code, reply->data, sizeof(exception_code));
-    memcpy(&presence_marker, reply->data + sizeof(exception_code),
-           sizeof(presence_marker));
-    return exception_code == 0 && presence_marker == 0;
+    uint64_t header = ~uint64_t{0};
+    memcpy(&header, reply->data, sizeof(header));
+    return header == 0;
 }
 
 HOT int transactHook(void* self, int32_t handle, uint32_t code, void* request,
                      void* reply, uint32_t flags) {
-    const bool should_patch =
-        UNLIKELY(isGetMetadataRequest(static_cast<PParcel*>(request), code));
-    const int result = g_transact_original(self, handle, code, request, reply, flags);
+    if (LIKELY(code != kGetMetadataTransactionCode)) {
+        return g_transact_original(self, handle, code, request, reply, flags);
+    }
 
-    if (LIKELY(!should_patch || result != 0)) return result;
-    if (LIKELY(!isNullMetadataReply(static_cast<PParcel*>(reply)))) return result;
+    const int result =
+        g_transact_original(self, handle, code, request, reply, flags);
+    if (LIKELY(result != 0)) return result;
+    if (LIKELY(!isNullMetadataReply(static_cast<const PParcel*>(reply)))) {
+        return result;
+    }
+
+    // Descriptor parsing is deliberately delayed until a successful reply has
+    // the exact nullable-object-null shape. This keeps false-positive
+    // transaction-code collisions off the hot path.
+    if (LIKELY(!isExpectedMetadataRequest(static_cast<const PParcel*>(request)))) {
+        return result;
+    }
 
     const int32_t set_data_result = g_parcel_set_data(
         reply, g_empty_metadata_reply, g_empty_metadata_reply_size);
@@ -317,22 +398,30 @@ HOT int transactHook(void* self, int32_t handle, uint32_t code, void* request,
 
     g_parcel_set_data_position(reply, 0);
 
-    // The load avoids a locked read-modify-write after the first repair.
+#if SYSTEMUI_MEDIA_FIX_INFO_LOGS
     if (UNLIKELY(__atomic_load_n(&g_patch_log_once, __ATOMIC_RELAXED) == 0) &&
         __atomic_exchange_n(&g_patch_log_once, 1u, __ATOMIC_RELAXED) == 0) {
         LOGI("Replaced null MediaMetadata Binder reply");
     }
+#endif
     return result;
 }
 
 COLD bool hookBinder(zygisk::Api* api, ino_t inode, dev_t device) {
-    api->pltHookRegister(
-        device, inode,
-        "_ZN7android14IPCThreadState8transactEijRKNS_6ParcelEPS1_j",
-        reinterpret_cast<void*>(&transactHook),
-        reinterpret_cast<void**>(&g_transact_original));
+    // g_transact_original already contains a direct libbinder fallback. A
+    // compliant Zygisk implementation overwrites it with the previous PLT
+    // target, preserving hook chaining.
+    api->pltHookRegister(device, inode, kTransactSymbol,
+                         reinterpret_cast<void*>(&transactHook),
+                         reinterpret_cast<void**>(&g_transact_original));
 
-    if (!api->pltHookCommit() || g_transact_original == nullptr ||
+    const TransactFn fallback = g_transact_original;
+    const bool committed = api->pltHookCommit();
+    if (g_transact_original == nullptr || g_transact_original == transactHook) {
+        g_transact_original = fallback;
+    }
+
+    if (!committed || g_transact_original == nullptr ||
         g_transact_original == transactHook) {
         LOGE("Could not install a valid IPCThreadState::transact hook");
         return false;
@@ -375,20 +464,31 @@ COLD bool run(zygisk::Api* api, JNIEnv* env) {
         return fail();
     }
 
-    g_get_metadata_code = getStaticIntFieldJni(
-        env, STUB("android/media/session/ISessionController"), TRSCTN("getMetadata"));
-    if (g_get_metadata_code == 0) {
-        LOGE("Could not resolve ISessionController.TRANSACTION_getMetadata");
-        return fail();
-    }
-
     if (!buildEmptyMetadataReply(env)) return fail();
-    if (!resolveParcelFunctions()) return fail();
+    if (!resolveBinderFunctions()) return fail();
     if (!hookBinder(api, libbinder_inode, libbinder_device)) return fail();
 
     __atomic_store_n(&g_init_state, kInitReady, __ATOMIC_RELEASE);
-    LOGI("Hook installed; transaction code=%u", g_get_metadata_code);
+    LOGI("Hook installed; transaction code=%u", kGetMetadataTransactionCode);
     return true;
+}
+
+COLD bool isTargetProcess(JNIEnv* env, jstring process_name) {
+    if (process_name == nullptr) return false;
+
+    const jsize length = env->GetStringLength(process_name);
+    if (clearJniException(env, "reading process-name length") ||
+        length != static_cast<jsize>(kTargetProcessLength)) {
+        return false;
+    }
+
+    static_assert(sizeof(jchar) == sizeof(char16_t));
+    jchar buffer[kTargetProcessLength];
+    env->GetStringRegion(process_name, 0,
+                         static_cast<jsize>(kTargetProcessLength), buffer);
+    if (clearJniException(env, "reading process name")) return false;
+
+    return memcmp(buffer, kTargetProcess, sizeof(buffer)) == 0;
 }
 
 class SystemUIMediaFix final : public zygisk::ModuleBase {
@@ -404,24 +504,16 @@ class SystemUIMediaFix final : public zygisk::ModuleBase {
     }
 
     void postAppSpecialize(const zygisk::AppSpecializeArgs* args) override {
-        if (UNLIKELY(args == nullptr || args->nice_name == nullptr)) {
+        if (UNLIKELY(args == nullptr || args->nice_name == nullptr ||
+                     !isTargetProcess(env_, args->nice_name))) {
             api_->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);
             return;
         }
 
-        const char* process_name = env_->GetStringUTFChars(args->nice_name, nullptr);
-        if (UNLIKELY(process_name == nullptr)) {
-            clearJniException(env_, "reading process name");
-            api_->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);
-            return;
-        }
-
-        const bool is_target = strcmp(process_name, kTargetProcess) == 0;
-        env_->ReleaseStringUTFChars(args->nice_name, process_name);
-
-        if (!is_target || !run(api_, env_)) {
-            api_->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);
-        }
+        // Never request DLCLOSE for the target. If a loader partially commits
+        // a PLT hook before reporting failure, keeping this library mapped
+        // prevents a dangling hook into unmapped code.
+        (void)run(api_, env_);
     }
 
   private:

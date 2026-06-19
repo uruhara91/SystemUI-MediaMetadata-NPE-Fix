@@ -44,15 +44,9 @@ if ($LASTEXITCODE -ne 0) { throw "ndk-build failed: $LASTEXITCODE" }
 Remove-Item $ModuleZygiskDir -Recurse -Force -ErrorAction SilentlyContinue
 New-Item $ModuleZygiskDir -ItemType Directory -Force | Out-Null
 
-$Libraries = @{
-    'arm64-v8a' = 'arm64-v8a.so'
-    'armeabi-v7a' = 'armeabi-v7a.so'
-}
-foreach ($Abi in $Libraries.Keys) {
-    $Source = Join-Path $ZygiskDir "libs\$Abi\libsystemui_media_fix.so"
-    if (-not (Test-Path $Source)) { throw "Missing compiled library: $Source" }
-    Copy-Item $Source (Join-Path $ModuleZygiskDir $Libraries[$Abi]) -Force
-}
+$Source = Join-Path $ZygiskDir 'libs\arm64-v8a\libsystemui_media_fix.so'
+if (-not (Test-Path $Source)) { throw "Missing compiled library: $Source" }
+Copy-Item $Source (Join-Path $ModuleZygiskDir 'arm64-v8a.so') -Force
 
 New-Item $OutputDir -ItemType Directory -Force | Out-Null
 $ZipPath = Join-Path $OutputDir "SystemUI-Media-Fix-$Version.zip"

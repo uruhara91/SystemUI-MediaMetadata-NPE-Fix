@@ -28,8 +28,6 @@ rm -rf "$ROOT/module/zygisk"
 mkdir -p "$ROOT/module/zygisk" "$ROOT/dist"
 cp "$ROOT/zygisk/libs/arm64-v8a/libsystemui_media_fix.so" \
    "$ROOT/module/zygisk/arm64-v8a.so"
-cp "$ROOT/zygisk/libs/armeabi-v7a/libsystemui_media_fix.so" \
-   "$ROOT/module/zygisk/armeabi-v7a.so"
 
 OUTPUT="$ROOT/dist/SystemUI-Media-Fix-${VERSION}.zip"
 rm -f "$OUTPUT"

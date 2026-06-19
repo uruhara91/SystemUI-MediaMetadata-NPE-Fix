@@ -11,6 +11,7 @@ LOCAL_CPPFLAGS := \
     -D_FORTIFY_SOURCE=2 \
     -fno-exceptions \
     -fno-rtti \
+    -fno-threadsafe-statics \
     -fno-semantic-interposition \
     -fstack-protector-strong \
     -fvisibility=hidden \
@@ -27,6 +28,7 @@ LOCAL_LDFLAGS := \
     -Wl,--as-needed \
     -Wl,--exclude-libs,ALL \
     -Wl,-z,relro \
-    -Wl,-z,now
+    -Wl,-z,now \
+    -Wl,-z,noexecstack
 LOCAL_LDLIBS := -llog -landroid -ldl
 include $(BUILD_SHARED_LIBRARY)

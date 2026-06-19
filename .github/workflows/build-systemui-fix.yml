@@ -1,0 +1,46 @@
+name: Build SystemUI Media Fix
+
+on:
+  push:
+    branches: [SystemUI-Fixer]
+    paths:
+      - 'zygisk/**'
+      - 'module/**'
+      - 'ci/**'
+      - 'build.sh'
+      - '.github/workflows/build-systemui-fix.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      NDK_VERSION: 27.2.12479018
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: |
+          sdkmanager "ndk;${NDK_VERSION}"
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Build module
+        run: bash build.sh
+
+      - name: Verify ELF hardening and exports
+        run: bash ci/verify-elf.sh
+
+      - name: Upload flashable ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: SystemUI-Media-Fix-v0.4.0
+          path: dist/SystemUI-Media-Fix-v0.4.0.zip
+          if-no-files-found: error

@@ -1,0 +1,8 @@
+/dist/
+/zygisk/libs/
+/zygisk/obj/
+/zygisk/build/
+*.zip
+*.so
+*.log
+.clangd

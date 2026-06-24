@@ -9,6 +9,10 @@ LOCAL_CPPFLAGS := \
     -flto \
     -DNDEBUG \
     -D_FORTIFY_SOURCE=2 \
+    -fno-plt \
+    -fstack-clash-protection \
+    -fno-unwind-tables \
+    -fno-asynchronous-unwind-tables \
     -fno-exceptions \
     -fno-rtti \
     -fno-threadsafe-statics \
@@ -22,13 +26,17 @@ LOCAL_CPPFLAGS := \
     -Wextra \
     -Wpedantic
 LOCAL_LDFLAGS := \
-    -flto=thin \
+    -flto \
+    -Wl,--strip-debug \
+    -Wl,-z,separate-code \
+    -Wl,--pack-dyn-relocs=android \
     -Wl,--gc-sections \
     -Wl,--icf=safe \
     -Wl,--as-needed \
     -Wl,--exclude-libs,ALL \
     -Wl,-z,relro \
     -Wl,-z,now \
-    -Wl,-z,noexecstack
+    -Wl,-z,noexecstack \
+    -Wl,--build-id=sha1
 LOCAL_LDLIBS := -llog -landroid -ldl
 include $(BUILD_SHARED_LIBRARY)

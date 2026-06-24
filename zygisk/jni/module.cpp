@@ -252,9 +252,9 @@ COLD bool buildEmptyMetadataReply(JNIEnv* env) {
 
     // Intentional process-lifetime allocation. The Binder hook concurrently
     // reads this immutable buffer and Parcel::setData copies it into each reply.
-    g_empty_metadata_reply = reply;
-    g_empty_metadata_reply_size = static_cast<size_t>(length);
-    LOGI("Prepared empty MediaMetadata reply (%zu bytes)", g_empty_metadata_reply_size);
+    g_hot.empty_metadata_reply = reply;
+    g_hot.empty_metadata_reply_size = static_cast<size_t>(length);
+    LOGI("Prepared empty MediaMetadata reply (%zu bytes)", g_hot.empty_metadata_reply_size);
     return finish(true);
 }
 
@@ -276,29 +276,29 @@ COLD void* resolveAnySymbol(void* handle, const char* const* names, size_t count
 }
 
 COLD void resetBinderSymbols() {
-    g_transact_original = nullptr;
-    g_parcel_set_data = nullptr;
-    g_parcel_set_data_position = nullptr;
-    if (g_libbinder_handle != nullptr) {
-        dlclose(g_libbinder_handle);
-        g_libbinder_handle = nullptr;
+    g_hot.transact_original = nullptr;
+    g_cold.parcel_set_data = nullptr;
+    g_cold.parcel_set_data_position = nullptr;
+    if (g_cold.libbinder_handle != nullptr) {
+        dlclose(g_cold.libbinder_handle);
+        g_cold.libbinder_handle = nullptr;
     }
 }
 
 COLD bool resolveBinderFunctions() {
-    if (g_libbinder_handle != nullptr) {
-        return g_transact_original != nullptr && g_parcel_set_data != nullptr &&
-               g_parcel_set_data_position != nullptr;
+    if (g_cold.libbinder_handle != nullptr) {
+        return g_hot.transact_original != nullptr && g_cold.parcel_set_data != nullptr &&
+               g_cold.parcel_set_data_position != nullptr;
     }
 
 #ifdef RTLD_NOLOAD
-    g_libbinder_handle =
+    g_cold.libbinder_handle =
         dlopen("libbinder.so", RTLD_NOW | RTLD_LOCAL | RTLD_NOLOAD);
 #endif
-    if (g_libbinder_handle == nullptr) {
-        g_libbinder_handle = dlopen("libbinder.so", RTLD_NOW | RTLD_LOCAL);
+    if (g_cold.libbinder_handle == nullptr) {
+        g_cold.libbinder_handle = dlopen("libbinder.so", RTLD_NOW | RTLD_LOCAL);
     }
-    if (g_libbinder_handle == nullptr) {
+    if (g_cold.libbinder_handle == nullptr) {
         LOGE("Could not reference libbinder.so: %s", dlerror());
         return false;
     }
@@ -313,19 +313,19 @@ COLD bool resolveBinderFunctions() {
     };
     const char* transact_symbols[] = {kTransactSymbol};
 
-    g_parcel_set_data = reinterpret_cast<ParcelSetDataFn>(resolveAnySymbol(
-        g_libbinder_handle, set_data_symbols,
+    g_cold.parcel_set_data = reinterpret_cast<ParcelSetDataFn>(resolveAnySymbol(
+        g_cold.libbinder_handle, set_data_symbols,
         sizeof(set_data_symbols) / sizeof(set_data_symbols[0])));
-    g_parcel_set_data_position = reinterpret_cast<ParcelSetDataPositionFn>(
-        resolveAnySymbol(g_libbinder_handle, set_position_symbols,
+    g_cold.parcel_set_data_position = reinterpret_cast<ParcelSetDataPositionFn>(
+        resolveAnySymbol(g_cold.libbinder_handle, set_position_symbols,
                          sizeof(set_position_symbols) /
                              sizeof(set_position_symbols[0])));
-    g_transact_original = reinterpret_cast<TransactFn>(resolveAnySymbol(
-        g_libbinder_handle, transact_symbols,
+    g_hot.transact_original = reinterpret_cast<TransactFn>(resolveAnySymbol(
+        g_cold.libbinder_handle, transact_symbols,
         sizeof(transact_symbols) / sizeof(transact_symbols[0])));
 
-    if (g_parcel_set_data == nullptr || g_parcel_set_data_position == nullptr ||
-        g_transact_original == nullptr) {
+    if (g_cold.parcel_set_data == nullptr || g_cold.parcel_set_data_position == nullptr ||
+        g_hot.transact_original == nullptr) {
         LOGE("Could not resolve required libbinder functions");
         resetBinderSymbols();
         return false;
@@ -374,11 +374,11 @@ ALWAYS_INLINE bool isNullMetadataReply(const PParcel* reply) {
 HOT int transactHook(void* self, int32_t handle, uint32_t code, void* request,
                      void* reply, uint32_t flags) {
     if (LIKELY(code != kGetMetadataTransactionCode)) {
-        return g_transact_original(self, handle, code, request, reply, flags);
+        return g_hot.transact_original(self, handle, code, request, reply, flags);
     }
 
     const int result =
-        g_transact_original(self, handle, code, request, reply, flags);
+        g_hot.transact_original(self, handle, code, request, reply, flags);
     if (LIKELY(result != 0)) return result;
     if (LIKELY(!isNullMetadataReply(static_cast<const PParcel*>(reply)))) {
         return result;
@@ -391,20 +391,20 @@ HOT int transactHook(void* self, int32_t handle, uint32_t code, void* request,
         return result;
     }
 
-    const int32_t set_data_result = g_parcel_set_data(
-        reply, g_empty_metadata_reply, g_empty_metadata_reply_size);
+    const int32_t set_data_result = g_cold.parcel_set_data(
+        reply, g_hot.empty_metadata_reply, g_hot.empty_metadata_reply_size);
     if (UNLIKELY(set_data_result != 0)) {
-        if (__atomic_exchange_n(&g_set_data_error_log_once, 1u, __ATOMIC_RELEASE) == 0) {
+        if (__atomic_exchange_n(&g_cold.set_data_error_log_once, 1u, __ATOMIC_RELEASE) == 0) {
             LOGE("Parcel::setData failed: %d", set_data_result);
         }
         return result;
     }
 
-    g_parcel_set_data_position(reply, 0);
+    g_cold.parcel_set_data_position(reply, 0);
 
 #if SYSTEMUI_MEDIA_FIX_INFO_LOGS
-    if (UNLIKELY(__atomic_load_n(&g_patch_log_once, __ATOMIC_RELAXED) == 0) &&
-        __atomic_exchange_n(&g_patch_log_once, 1u, __ATOMIC_RELAXED) == 0) {
+    if (UNLIKELY(__atomic_load_n(&g_cold.patch_log_once, __ATOMIC_RELAXED) == 0) &&
+        __atomic_exchange_n(&g_cold.patch_log_once, 1u, __ATOMIC_RELAXED) == 0) {
         LOGI("Replaced null MediaMetadata Binder reply");
     }
 #endif
@@ -414,20 +414,20 @@ HOT int transactHook(void* self, int32_t handle, uint32_t code, void* request,
 COLD bool hookBinder(zygisk::Api* api, ino_t inode, dev_t device) {
     api->pltHookRegister(device, inode, kTransactSymbol,
                          reinterpret_cast<void*>(&transactHook),
-                         reinterpret_cast<void**>(&g_transact_original));
+                         reinterpret_cast<void**>(&g_hot.transact_original));
 
-    const TransactFn fallback = g_transact_original;
+    const TransactFn fallback = g_hot.transact_original;
     const bool committed = api->pltHookCommit();
-    if (g_transact_original == nullptr || g_transact_original == transactHook) {
-        g_transact_original = fallback;
+    if (g_hot.transact_original == nullptr || g_hot.transact_original == transactHook) {
+        g_hot.transact_original = fallback;
     }
 
-    if (!committed || g_transact_original == nullptr ||
-        g_transact_original == transactHook) {
+    if (!committed || g_hot.transact_original == nullptr ||
+        g_hot.transact_original == transactHook) {
         LOGE("Could not install a valid IPCThreadState::transact hook");
         // Self-referential or null hook is unrecoverable — crash rather than
         // silently forward all Binder calls into an infinite loop.
-        if (g_transact_original == transactHook) __builtin_trap();
+        if (g_hot.transact_original == transactHook) __builtin_trap();
         return false;
     }
     return true;
@@ -443,7 +443,7 @@ COLD bool isSupportedBuild() {
 
 COLD bool run(zygisk::Api* api, JNIEnv* env) {
     uint32_t expected = kInitNotStarted;
-    if (!__atomic_compare_exchange_n(&g_init_state, &expected, kInitRunning,
+    if (!__atomic_compare_exchange_n(&g_cold.init_state, &expected, kInitRunning,
                                      false, __ATOMIC_ACQ_REL,
                                      __ATOMIC_ACQUIRE)) {
         if (expected == kInitReady) return true;
@@ -452,7 +452,7 @@ COLD bool run(zygisk::Api* api, JNIEnv* env) {
     }
 
     auto fail = []() {
-        __atomic_store_n(&g_init_state, kInitFailed, __ATOMIC_RELEASE);
+        __atomic_store_n(&g_cold.init_state, kInitFailed, __ATOMIC_RELEASE);
         return false;
     };
 
@@ -473,7 +473,7 @@ COLD bool run(zygisk::Api* api, JNIEnv* env) {
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
     if (!hookBinder(api, libbinder_inode, libbinder_device)) return fail();
 
-    __atomic_store_n(&g_init_state, kInitReady, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_cold.init_state, kInitReady, __ATOMIC_RELEASE);
     LOGI("Hook installed; transaction code=%u", kGetMetadataTransactionCode);
     return true;
 }
@@ -529,3 +529,5 @@ class SystemUIMediaFix final : public zygisk::ModuleBase {
 }  // namespace
 
 REGISTER_ZYGISK_MODULE(SystemUIMediaFix)
+
+}

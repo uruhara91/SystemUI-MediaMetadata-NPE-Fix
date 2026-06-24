@@ -389,8 +389,7 @@ HOT int transactHook(void* self, int32_t handle, uint32_t code, void* request,
     const int32_t set_data_result = g_parcel_set_data(
         reply, g_empty_metadata_reply, g_empty_metadata_reply_size);
     if (UNLIKELY(set_data_result != 0)) {
-        if (__atomic_exchange_n(&g_set_data_error_log_once, 1u,
-                                __ATOMIC_RELAXED) == 0) {
+        if (__atomic_exchange_n(&g_set_data_error_log_once, 1u, __ATOMIC_RELEASE) == 0) {
             LOGE("Parcel::setData failed: %d", set_data_result);
         }
         return result;
@@ -466,6 +465,7 @@ COLD bool run(zygisk::Api* api, JNIEnv* env) {
 
     if (!buildEmptyMetadataReply(env)) return fail();
     if (!resolveBinderFunctions()) return fail();
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
     if (!hookBinder(api, libbinder_inode, libbinder_device)) return fail();
 
     __atomic_store_n(&g_init_state, kInitReady, __ATOMIC_RELEASE);

@@ -74,17 +74,22 @@ enum InitState : uint32_t {
     kInitFailed = 3,
 };
 
-uint32_t g_init_state = kInitNotStarted;
-TransactFn g_transact_original = nullptr;
-ParcelSetDataFn g_parcel_set_data = nullptr;
-ParcelSetDataPositionFn g_parcel_set_data_position = nullptr;
-void* g_libbinder_handle = nullptr;
-uint8_t* g_empty_metadata_reply = nullptr;
-size_t g_empty_metadata_reply_size = 0;
+struct alignas(64) HotState {
+    TransactFn transact_original = nullptr;
+    uint8_t* empty_metadata_reply = nullptr;
+    size_t empty_metadata_reply_size = 0;
+} g_hot;
+
+struct alignas(64) ColdState {
+    uint32_t init_state = kInitNotStarted;
+    ParcelSetDataFn parcel_set_data = nullptr;
+    ParcelSetDataPositionFn parcel_set_data_position = nullptr;
+    void* libbinder_handle = nullptr;
+    uint32_t set_data_error_log_once = 0;
 #if SYSTEMUI_MEDIA_FIX_INFO_LOGS
-uint32_t g_patch_log_once = 0;
+    uint32_t patch_log_once = 0;
 #endif
-uint32_t g_set_data_error_log_once = 0;
+} g_cold;
 
 COLD bool clearJniException(JNIEnv* env, const char* operation) {
     if (!env->ExceptionCheck()) return false;
@@ -407,9 +412,6 @@ HOT int transactHook(void* self, int32_t handle, uint32_t code, void* request,
 }
 
 COLD bool hookBinder(zygisk::Api* api, ino_t inode, dev_t device) {
-    // g_transact_original already contains a direct libbinder fallback. A
-    // compliant Zygisk implementation overwrites it with the previous PLT
-    // target, preserving hook chaining.
     api->pltHookRegister(device, inode, kTransactSymbol,
                          reinterpret_cast<void*>(&transactHook),
                          reinterpret_cast<void**>(&g_transact_original));
@@ -423,6 +425,9 @@ COLD bool hookBinder(zygisk::Api* api, ino_t inode, dev_t device) {
     if (!committed || g_transact_original == nullptr ||
         g_transact_original == transactHook) {
         LOGE("Could not install a valid IPCThreadState::transact hook");
+        // Self-referential or null hook is unrecoverable — crash rather than
+        // silently forward all Binder calls into an infinite loop.
+        if (g_transact_original == transactHook) __builtin_trap();
         return false;
     }
     return true;

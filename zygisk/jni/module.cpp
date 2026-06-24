@@ -529,5 +529,3 @@ class SystemUIMediaFix final : public zygisk::ModuleBase {
 }  // namespace
 
 REGISTER_ZYGISK_MODULE(SystemUIMediaFix)
-
-}

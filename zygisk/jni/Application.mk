@@ -3,3 +3,4 @@ APP_PLATFORM := android-31
 APP_STL := none
 APP_OPTIM := release
 APP_CPPFLAGS := -DNDEBUG
+APP_CPPFLAGS += -march=armv8.2-a -mtune=cortex-a78

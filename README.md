@@ -1,6 +1,6 @@
 # SystemUI MediaMetadata NPE Fix
 
-Targeted arm64-only Zygisk workaround for this TranSystemUI crash:
+Zygisk workaround for this TranSystemUI crash:
 
 ```text
 FATAL EXCEPTION: SysUiBg
@@ -10,17 +10,37 @@ java.lang.NullPointerException
   at com.android.systemui.media.MediaDataManager.loadMediaDataInBg(...)
 ```
 
-## Supported target
+## How it works
+
+When SystemUI requests MediaMetadata through
+android.media.session.ISessionController.getMetadata(),
+some media sessions may return a null MediaMetadata object.
+
+TranSystemUI does not properly handle this condition and may
+throw a NullPointerException while reading metadata fields.
+
+This module intercepts only the affected Binder transaction and
+replaces a verified null MediaMetadata reply with an empty
+framework-generated MediaMetadata object.
+
+The module does not modify:
+
+- Other Binder transaction codes
+- Other Binder interfaces
+- Non-null MediaMetadata replies
+- System_server behavior
+- Application processes outside SystemUI
+
+## Compatibility
+
+This module is intentionally hardcoded for:
 
 - Device: Infinix X6815B
 - Android: 12 / API 31
-- SystemUI: 12.0.2.187 (`versionCode=202309220`)
-- Firmware fingerprint: `Infinix/X6815B-OP/Infinix-X6815B:12/SP1A.210812.016/231020V486:user/release-keys`
-- SystemUI APK: `/system_ext/priv-app/TranSystemUI/TranSystemUI.apk`
-- Target process: `com.android.systemui` via `/system/bin/app_process64`
+- Firmware build: `231020V486`
 - Packaged ABI: arm64-v8a only
 
-The installer and native library refuse to hook a different SDK or firmware fingerprint. The installer additionally validates the exact SystemUI version. The module is intentionally specialized for this final firmware and is not a generic Android 12 fix.
+Other firmware versions are intentionally rejected.
 
 ## Verified runtime
 
@@ -28,33 +48,12 @@ The fix has been verified on the target device with FolkPatch and Zygisk Next. T
 
 Musicolet, MiXplorer media playback, YouTube media transitions, repeated SystemUI kills, and repeated reboots no longer reproduce the null-MediaMetadata restart loop.
 
-## How it works
+## Design and hardening
 
-The module remains mapped only in the exact `com.android.systemui` process. Other app processes and `system_server` request `DLCLOSE_MODULE_LIBRARY` immediately. The target process is never unloaded after initialization starts, preventing a dangling callback if a Zygisk implementation reports a partial PLT-hook failure.
-
-It hooks the native `IPCThreadState::transact` Binder path and watches Android 12 transaction code 32. The common path performs one compile-time transaction-code comparison and immediately calls the original function. Descriptor parsing is delayed until a successful reply has the exact eight-byte nullable-object-null representation.
-
-Only a validated `android.media.session.ISessionController.getMetadata` null reply is replaced with a platform-generated empty `MediaMetadata` Parcel before TranSystemUI reads it.
-
-There is no LSPosed, LSPlant, Java method hook, modified SystemUI APK, companion daemon, or system overlay.
-
-## v6.9 optimization and hardening
-
-- arm64-v8a only; the target SystemUI runs through `app_process64`.
-- No NDK STL runtime (`APP_STL := none`).
-- Compile-time Android 12 transaction code, Binder offsets, and descriptor.
-- Direct fast return for all non-matching Binder transaction codes.
-- Null-reply validation before the more expensive descriptor comparison.
-- One 64-bit comparison for the null reply header.
-- One-time framework-generated replacement Parcel; no JNI or allocation in the Binder hook.
-- Allocation-free UTF-16 process-name matching during specialization.
-- Per-call JNI exception checking and clearing during initialization.
-- Handle-first `libbinder.so` symbol resolution with `RTLD_DEFAULT` fallback.
-- Pre-resolved original transact fallback before PLT-hook commit.
-- Target library remains mapped on every target-process failure path.
-- Release builds compile out informational logs; error logs remain rate-limited where needed.
-- Thin LTO, section garbage collection, identical-code folding, hidden visibility, RELRO, immediate binding, non-executable stack, stack protection, and fortified libc calls.
-- CI validates an arm64 ELF, dynamic Zygisk entry export, hardening, dependencies, and ZIP contents.
+- Low-overhead Binder transaction filtering
+- Pre-generated replacement MediaMetadata parcel
+- No JNI calls in the hot Binder path
+- Hardened native build configuration
 
 ## Build on Windows PowerShell
 
@@ -68,7 +67,7 @@ $env:ANDROID_NDK_HOME = 'C:\Users\YOU\AppData\Local\Android\Sdk\ndk\27.2.1247901
 Or pass the path directly:
 
 ```powershell
-.\build.ps1 -NdkPath 'D:\Android\ndk\27.2.12479018'
+.\builps1 -NdkPath 'D:\Android\ndk\27.2.12479018'
 ```
 
 The flashable ZIP is written to:

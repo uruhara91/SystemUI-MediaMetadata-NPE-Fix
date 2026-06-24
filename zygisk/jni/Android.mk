@@ -5,8 +5,8 @@ LOCAL_MODULE := systemui_media_fix
 LOCAL_SRC_FILES := module.cpp binder.cpp
 LOCAL_CPPFLAGS := \
     -std=c++20 \
-    -O2 \
-    -flto=thin \
+    -O3 \
+    -flto \
     -DNDEBUG \
     -D_FORTIFY_SOURCE=2 \
     -fno-exceptions \
